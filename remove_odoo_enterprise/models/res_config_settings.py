@@ -2,7 +2,6 @@
 # Copyright 2018-2020 Onestein (<http://www.onestein.eu>)
 # Copyright 2023 Le Filament (https://le-filament.com)
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
-
 from lxml import etree
 
 from odoo import api, models
@@ -13,29 +12,68 @@ class ResConfigSettings(models.TransientModel):
 
     @api.model
     def get_views(self, views, options=None):
-        ret_val = super().get_views(views, options)
+        """Override to hide settings related to enterprise features.
 
-        form_view = self.env["ir.ui.view"].browse(ret_val["views"]["form"]["id"])
+        This method modifies the form view for settings to hide options
+        that require enterprise version of Odoo.
+        """
+        result = super().get_views(views, options)
 
-        view_xml_ids = (
-            form_view.xml_id,
-            form_view.inherit_id.xml_id,
+        # Only process the specific configuration view we're interested in
+        if not self._is_base_config_settings_view(result):
+            return result
+
+        doc = etree.XML(result["views"]["form"]["arch"])
+
+        # Hide all setting boxes containing upgrade_boolean widgets
+        self._hide_enterprise_settings(doc)
+
+        # Hide empty setting containers and their headings
+        self._hide_empty_containers(doc)
+
+        # Update the form view architecture with the modified XML
+        result["views"]["form"]["arch"] = etree.tostring(doc)
+        return result
+
+    def _is_base_config_settings_view(self, view_result):
+        """Check if the current view is the base settings form."""
+        form_view = self.env["ir.ui.view"].browse(view_result["views"]["form"]["id"])
+        view_xml_ids = (form_view.xml_id, form_view.inherit_id.xml_id)
+        return "base.res_config_settings_view_form" in view_xml_ids
+
+    def _hide_enterprise_settings(self, doc):
+        """Hide all setting boxes containing upgrade_boolean widgets."""
+        # Find all setting boxes with upgrade_boolean widgets
+        query = (
+            "//div[contains(@class, 'o_setting_box')]"
+            "[.//field[@widget='upgrade_boolean']]"
         )
-        if "base.res_config_settings_view_form" not in view_xml_ids:
-            return ret_val
+        for setting_box in doc.xpath(query):
+            classes = setting_box.attrib.get("class", "").split()
+            if "d-none" not in classes:
+                classes.append("d-none")
+            setting_box.attrib["class"] = " ".join(classes)
 
-        doc = etree.XML(ret_val["views"]["form"]["arch"])
+    def _hide_empty_containers(self, doc):
+        """Hide containers that no longer have any visible setting boxes."""
+        # Find containers with no visible setting boxes
+        empty_container_query = (
+            "//div[contains(@class, 'o_settings_container')]"
+            "[not(.//div[contains(@class, 'o_setting_box') "
+            "and not(contains(@class, 'd-none'))])]"
+        )
 
-        query = "//div[div[field[@widget='upgrade_boolean']]]"
-        for item in doc.xpath(query):
-            item.attrib["class"] = "d-none"
+        for empty_container in doc.xpath(empty_container_query):
+            # If there's a heading before the container, hide it too
+            prev_element = empty_container.getprevious()
+            if prev_element is not None and prev_element.tag == "h2":
+                heading_classes = prev_element.attrib.get("class", "").split()
+                if "d-none" not in heading_classes:
+                    heading_classes.append("d-none")
+                prev_element.attrib["class"] = " ".join(heading_classes)
 
-        for container in doc.xpath("//div[contains(@class, 'o_settings_container')]"):
-            if len(container.xpath("div[not(contains(@class, 'd-none'))]")) == 0:
-                prev_el = container.getprevious()
-                if len(prev_el) and prev_el.tag == "h2":
-                    prev_el.attrib["class"] = "d-none"
-                container.attrib["class"] = "d-none"
-
-        ret_val["views"]["form"]["arch"] = etree.tostring(doc)
-        return ret_val
+            # Hide the empty container
+            container_classes = empty_container.attrib.get("class", "").split()
+            if "d-none" not in container_classes:
+                container_classes.append("d-none")
+            empty_container.attrib["class"] = " ".join(container_classes)
